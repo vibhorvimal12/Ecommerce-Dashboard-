@@ -1,0 +1,17 @@
+# Fix render.yaml
+cat > render.yaml << 'EOF'
+services:
+  - type: web
+    name: customer-churn-api
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python api/main.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.18
+EOF
+
+# Commit and push
+git add render.yaml
+git commit -m "Fix render.yaml startCommand"
+git push origin main
