@@ -1,0 +1,44 @@
+data:
+  raw_path: "data/raw"
+  processed_path: "data/processed"
+  
+model:
+  random_seed: 42
+  test_size: 0.2
+  cv_folds: 5
+  
+features:
+  numeric_features:
+    - age
+    - total_transactions
+    - total_spent
+    - avg_transaction_value
+    - days_since_last_purchase
+    - tenure_days
+    - recency
+    - frequency
+    - monetary
+    
+  categorical_features:
+    - gender
+    - location
+    - customer_segment
+    - payment_method
+    
+  target: churned
+  
+training:
+  models:
+    - random_forest
+    - xgboost
+    - lightgbm
+  
+  metric: roc_auc
+  
+api:
+  host: "0.0.0.0"
+  port: 8000
+  
+dashboard:
+  title: "Customer Analytics Dashboard"
+  theme: "plotly_white"
