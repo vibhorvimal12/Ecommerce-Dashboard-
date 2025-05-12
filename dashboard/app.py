@@ -5,18 +5,8 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import joblib
-import sys
 import os
-import yaml
-from pathlib import Path
-
-# Add parent directory to path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
-
-from src.features.rfm_analysis import RFMAnalysis
+from datetime import datetime, timedelta
 
 # Set page config
 st.set_page_config(
@@ -25,47 +15,108 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom data loader to handle config issues
-class SimpleDataLoader:
-    def __init__(self, base_path):
-        self.base_path = Path(base_path)
-    
-    def load_all_data(self):
-        customers = pd.read_csv(self.base_path / "data" / "raw" / "customers.csv")
-        products = pd.read_csv(self.base_path / "data" / "raw" / "products.csv")
-        transactions = pd.read_csv(self.base_path / "data" / "raw" / "transactions.csv")
-        
-        # Convert date columns
-        customers['registration_date'] = pd.to_datetime(customers['registration_date'])
-        transactions['transaction_date'] = pd.to_datetime(transactions['transaction_date'])
-        
-        return customers, products, transactions
+# RFM Analysis class
+class RFMAnalysis:
+    def __init__(self):
+        self.segment_map = {
+            'Champions': (1, 2, 1, 2),
+            'Loyal_Customers': (3, 3, 1, 3),
+            'Potential_Loyalists': (3, 3, 4, 5),
+            'At_Risk': (4, 5, 1, 3),
+            'Lost_Customers': (4, 5, 4, 5)
+        }
 
-# Load data with proper error handling
-@st.cache_data
-def load_data():
-    try:
-        # Try to use the original DataLoader
-        from src.data.data_loader import DataLoader
-        config_path = os.path.join(parent_dir, "config", "config.yaml")
+    def calculate_rfm(self, transactions):
+        """Calculate RFM metrics for each customer"""
+        # Calculate recency, frequency, monetary value
+        today = pd.Timestamp.now()
         
-        if os.path.exists(config_path):
-            data_loader = DataLoader(config_path)
-            return data_loader.load_all_data()
-        else:
-            # Fallback to simple loader
-            st.warning("Config file not found. Using default data paths.")
-            data_loader = SimpleDataLoader(parent_dir)
-            return data_loader.load_all_data()
-    except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        # Final fallback - direct loading
-        try:
-            data_loader = SimpleDataLoader(parent_dir)
-            return data_loader.load_all_data()
-        except Exception as e2:
-            st.error(f"Failed to load data: {str(e2)}")
-            st.stop()
+        rfm = transactions.groupby('customer_id').agg({
+            'transaction_date': lambda x: (today - pd.to_datetime(x).max()).days,
+            'transaction_id': 'count',
+            'amount': 'sum'
+        })
+        
+        # Rename columns
+        rfm.columns = ['recency', 'frequency', 'monetary']
+        
+        # Create RFM segments
+        rfm = self.create_rfm_features(rfm)
+        
+        return rfm
+    
+    def create_rfm_features(self, rfm):
+        """Create RFM features and segments"""
+        # Normalize values
+        rfm['recency_norm'] = (rfm['recency'] - rfm['recency'].min()) / (rfm['recency'].max() - rfm['recency'].min())
+        rfm['frequency_norm'] = (rfm['frequency'] - rfm['frequency'].min()) / (rfm['frequency'].max() - rfm['frequency'].min())
+        rfm['monetary_norm'] = (rfm['monetary'] - rfm['monetary'].min()) / (rfm['monetary'].max() - rfm['monetary'].min())
+        
+        # R and F scores (1 is best, 5 is worst)
+        rfm['r_score'] = pd.qcut(rfm['recency'], 5, labels=range(1, 6)).astype(int)
+        rfm['f_score'] = pd.qcut(rfm['frequency'], 5, labels=range(1, 6)).astype(int)
+        rfm['m_score'] = pd.qcut(rfm['monetary'], 5, labels=range(1, 6)).astype(int)
+        
+        # RFM Score
+        rfm['rfm_score'] = rfm['r_score'] + rfm['f_score'] + rfm['m_score']
+        
+        # Feature Interactions
+        rfm['rf_interaction'] = rfm['recency_norm'] * rfm['frequency_norm']
+        rfm['fm_interaction'] = rfm['frequency_norm'] * rfm['monetary_norm']
+        rfm['rm_interaction'] = rfm['recency_norm'] * rfm['monetary_norm']
+        
+        # Create segments
+        rfm['segment'] = 'Unknown'
+        
+        for segment, (r_min, r_max, f_min, f_max) in self.segment_map.items():
+            rfm.loc[(rfm['r_score'] >= r_min) & (rfm['r_score'] <= r_max) & 
+                   (rfm['f_score'] >= f_min) & (rfm['f_score'] <= f_max), 'segment'] = segment
+        
+        return rfm.reset_index()
+
+# Load sample data
+@st.cache_data
+def load_sample_data():
+    # Generate customers
+    np.random.seed(42)
+    customers = pd.DataFrame({
+        'customer_id': [f'CUST{i:05d}' for i in range(1000)],
+        'registration_date': [datetime.now() - timedelta(days=np.random.randint(1, 730)) for _ in range(1000)],
+        'age': np.random.randint(18, 70, 1000),
+        'gender': np.random.choice(['M', 'F'], 1000),
+        'location': np.random.choice(['North', 'South', 'East', 'West'], 1000),
+        'customer_segment': np.random.choice(['Premium', 'Standard', 'Basic'], 1000),
+        'churned': np.random.choice([0, 1], 1000, p=[0.8, 0.2])
+    })
+
+    # Generate products
+    products = pd.DataFrame({
+        'product_id': [f'PROD{i:04d}' for i in range(100)],
+        'product_name': [f'Product {i}' for i in range(100)],
+        'category': np.random.choice(['Electronics', 'Clothing', 'Home', 'Books', 'Sports'], 100),
+        'price': np.random.uniform(10, 500, 100)
+    })
+
+    # Generate transactions
+    transactions_list = []
+    for i in range(5000):
+        customer_idx = np.random.randint(0, len(customers))
+        product_idx = np.random.randint(0, len(products))
+        
+        transaction = {
+            'transaction_id': f'TRX{i:06d}',
+            'customer_id': customers.iloc[customer_idx]['customer_id'],
+            'product_id': products.iloc[product_idx]['product_id'],
+            'transaction_date': datetime.now() - timedelta(days=np.random.randint(1, 365)),
+            'quantity': np.random.randint(1, 5),
+            'amount': products.iloc[product_idx]['price'] * np.random.randint(1, 5),
+            'payment_method': np.random.choice(['Credit Card', 'Debit Card', 'PayPal', 'Bank Transfer'])
+        }
+        transactions_list.append(transaction)
+
+    transactions = pd.DataFrame(transactions_list)
+    
+    return customers, products, transactions
 
 # Main dashboard
 def main():
@@ -78,12 +129,7 @@ def main():
                                ["Overview", "Customer Segmentation", "Churn Analysis", "Individual Prediction"])
     
     # Load data
-    try:
-        customers, products, transactions = load_data()
-    except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        st.info("Please make sure you've generated the sample data by running: `python scripts/generate_sample_data.py`")
-        st.stop()
+    customers, products, transactions = load_sample_data()
     
     if page == "Overview":
         show_overview(customers, transactions)
@@ -149,52 +195,48 @@ def show_segmentation(customers, transactions):
     st.header("Customer Segmentation Analysis")
     
     # RFM Analysis
-    try:
-        rfm_analyzer = RFMAnalysis()
-        rfm_df = rfm_analyzer.calculate_rfm(transactions)
-        
-        # RFM Distribution
-        st.subheader("RFM Score Distribution")
-        
-        fig = make_subplots(rows=1, cols=3, 
-                           subplot_titles=('Recency Distribution', 
-                                         'Frequency Distribution', 
-                                         'Monetary Distribution'))
-        
-        fig.add_trace(go.Histogram(x=rfm_df['recency'], name='Recency', 
-                                  marker_color='indianred'), row=1, col=1)
-        fig.add_trace(go.Histogram(x=rfm_df['frequency'], name='Frequency',
-                                  marker_color='lightseagreen'), row=1, col=2)
-        fig.add_trace(go.Histogram(x=rfm_df['monetary'], name='Monetary',
-                                  marker_color='royalblue'), row=1, col=3)
-        
-        fig.update_layout(height=400, showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Customer Segments
-        st.subheader("Customer Segments")
-        
-        segment_counts = rfm_df['segment'].value_counts().reset_index()
-        segment_counts.columns = ['segment', 'count']
-        fig_segments = px.bar(segment_counts, x='segment', y='count',
-                             title='Customers by RFM Segment',
-                             labels={'count': 'Number of Customers', 'segment': 'Segment'},
-                             color='count',
-                             color_continuous_scale='Viridis')
-        st.plotly_chart(fig_segments, use_container_width=True)
-        
-        # Segment metrics
-        segment_metrics = rfm_df.groupby('segment').agg({
-            'monetary': 'mean',
-            'frequency': 'mean',
-            'recency': 'mean'
-        }).round(2)
-        
-        st.subheader("Segment Metrics")
-        st.dataframe(segment_metrics.style.highlight_max(axis=0))
-        
-    except Exception as e:
-        st.error(f"Error in RFM analysis: {str(e)}")
+    rfm_analyzer = RFMAnalysis()
+    rfm_df = rfm_analyzer.calculate_rfm(transactions)
+    
+    # RFM Distribution
+    st.subheader("RFM Score Distribution")
+    
+    fig = make_subplots(rows=1, cols=3, 
+                       subplot_titles=('Recency Distribution', 
+                                     'Frequency Distribution', 
+                                     'Monetary Distribution'))
+    
+    fig.add_trace(go.Histogram(x=rfm_df['recency'], name='Recency', 
+                              marker_color='indianred'), row=1, col=1)
+    fig.add_trace(go.Histogram(x=rfm_df['frequency'], name='Frequency',
+                              marker_color='lightseagreen'), row=1, col=2)
+    fig.add_trace(go.Histogram(x=rfm_df['monetary'], name='Monetary',
+                              marker_color='royalblue'), row=1, col=3)
+    
+    fig.update_layout(height=400, showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Customer Segments
+    st.subheader("Customer Segments")
+    
+    segment_counts = rfm_df['segment'].value_counts().reset_index()
+    segment_counts.columns = ['segment', 'count']
+    fig_segments = px.bar(segment_counts, x='segment', y='count',
+                         title='Customers by RFM Segment',
+                         labels={'count': 'Number of Customers', 'segment': 'Segment'},
+                         color='count',
+                         color_continuous_scale='Viridis')
+    st.plotly_chart(fig_segments, use_container_width=True)
+    
+    # Segment metrics
+    segment_metrics = rfm_df.groupby('segment').agg({
+        'monetary': 'mean',
+        'frequency': 'mean',
+        'recency': 'mean'
+    }).round(2)
+    
+    st.subheader("Segment Metrics")
+    st.dataframe(segment_metrics)
 
 def show_churn_analysis(customers, transactions):
     st.header("Churn Analysis")
@@ -280,77 +322,56 @@ def show_prediction_page():
         tenure_days = st.number_input("Tenure (Days)", min_value=0, value=365)
     
     if st.button("Predict Churn", type="primary"):
-        # Check if API is running
-        import requests
+        # Sample prediction logic (normally would call API)
+        churn_risk = 0.3 if age > 40 and total_transactions < 5 else 0.7 if days_since_last_purchase > 60 else 0.1
         
-        try:
-            # Make prediction request to API
-            api_url = "http://localhost:8000/predict"
-            
-            customer_data = {
-                "customer_id": customer_id,
-                "age": age,
-                "gender": gender,
-                "location": location,
-                "customer_segment": customer_segment,
-                "total_transactions": total_transactions,
-                "total_spent": total_spent,
-                "days_since_last_purchase": days_since_last_purchase,
-                "tenure_days": tenure_days
-            }
-            
-            response = requests.post(api_url, json=customer_data)
-            
-            if response.status_code == 200:
-                result = response.json()
-                
-                # Display results
-                st.markdown("---")
-                st.subheader("Prediction Results")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Churn Probability", f"{result['churn_probability']:.2%}")
-                
-                with col2:
-                    st.metric("Risk Level", result['risk_level'])
-                
-                with col3:
-                    st.metric("Predicted", "Churn" if result['churn_prediction'] else "No Churn")
-                
-                # Recommendations based on risk level
-                st.subheader("Recommended Actions")
-                
-                if result['risk_level'] == "High":
-                    st.error("⚠️ High risk customer - Immediate intervention required!")
-                    st.markdown("""
-                    - Send personalized retention offer
-                    - Schedule customer success call
-                    - Offer loyalty program enrollment
-                    """)
-                elif result['risk_level'] == "Medium":
-                    st.warning("⚡ Medium risk customer - Monitor closely")
-                    st.markdown("""
-                    - Send engagement email campaign
-                    - Offer product recommendations
-                    - Provide exclusive discounts
-                    """)
-                else:
-                    st.success("✅ Low risk customer - Maintain engagement")
-                    st.markdown("""
-                    - Continue regular communication
-                    - Send newsletter updates
-                    - Encourage referrals
-                    """)
-            else:
-                st.error(f"API Error: {response.text}")
-                
-        except requests.exceptions.ConnectionError:
-            st.error("Cannot connect to the API. Please make sure the API is running at http://localhost:8000")
-            st.info("Start the API by running: `python api/main.py` in another terminal")
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
+        # Set risk level
+        if churn_risk < 0.3:
+            risk_level = "Low"
+        elif churn_risk < 0.7:
+            risk_level = "Medium"
+        else:
+            risk_level = "High"
+        
+        # Display results
+        st.markdown("---")
+        st.subheader("Prediction Results")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Churn Probability", f"{churn_risk:.2%}")
+        
+        with col2:
+            st.metric("Risk Level", risk_level)
+        
+        with col3:
+            st.metric("Predicted", "Churn" if churn_risk > 0.5 else "No Churn")
+        
+        # Recommendations
+        st.subheader("Recommended Actions")
+        
+        if risk_level == "High":
+            st.error("⚠️ High risk customer - Immediate intervention required!")
+            st.markdown("""
+            - Send personalized retention offer
+            - Schedule customer success call
+            - Offer loyalty program enrollment
+            """)
+        elif risk_level == "Medium":
+            st.warning("⚡ Medium risk customer - Monitor closely")
+            st.markdown("""
+            - Send engagement email campaign
+            - Offer product recommendations
+            - Provide exclusive discounts
+            """)
+        else:
+            st.success("✅ Low risk customer - Maintain engagement")
+            st.markdown("""
+            - Continue regular communication
+            - Send newsletter updates
+            - Encourage referrals
+            """)
 
 if __name__ == "__main__":
     main()
